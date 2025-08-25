@@ -1,28 +1,40 @@
 // app/layout.tsx
-import type { Metadata } from "next";
-import Script from "next/script";
+import type { Metadata } from 'next';
+import { Vazirmatn } from 'next/font/google';
+import Script from 'next/script';
+import './globals.css'; // اگر این فایل را نداری، این خط را حذف کن
 
 export const metadata: Metadata = {
-  title: "Rezaei Family Todo",
-  description: "Family taskboard with push notifications",
+  title: 'Family Taskboard',
+  description: 'مامان‌محور با نقش‌ها و ددلاین',
 };
+
+const vazir = Vazirmatn({
+  subsets: ['arabic', 'latin'],
+  weight: ['300', '400', '600', '700'],
+  display: 'swap',
+});
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="fa" dir="rtl">
       <head>
-        <link
-          href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;800&display=swap"
-          rel="stylesheet"
-        />
-        {/* SDK صفحه‌ی OneSignal (v16) */}
+        {/* PWA manifest (اختیاری) */}
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <meta name="theme-color" content="#111827" />
+
+        {/* Only add OneSignal SDK – بدون تغییر استایل/دیزاین */}
         <Script
           src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js"
           strategy="afterInteractive"
           defer
         />
       </head>
-      <body className="font-sans bg-[radial-gradient(ellipse_at_top_right,rgba(120,119,198,0.35),transparent_35%),radial-gradient(ellipse_at_bottom_left,rgba(16,185,129,0.35),transparent_30%),linear-gradient(180deg,#0b1020,#0b1020)] text-white">
+      <body
+        className={`${vazir.className} font-sans text-slate-900 bg-[#f7f6f5]
+                    [background-image:radial-gradient(#e9e7e5_1px,transparent_1px)]
+                    [background-size:14px_14px] [background-position:0_0]`}
+      >
         {children}
       </body>
     </html>
