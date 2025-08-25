@@ -659,7 +659,14 @@ function TaskCard({
 /* ======================== small parts ======================== */
 function AssignChip({ who, selected, onClick, label }: { who: "dad"|"son"; selected: boolean; onClick: ()=>void; label: string }) {
   return (
-    <button onClick={onClick} className={`chip px-4 py-2 rounded-xl ${selected ? "bg-emerald-400 text-black ring-emerald-500" : "bg-white/10 ring-white/15"}`}>
+    <button
+  onClick={onClick}
+  className={`chip px-4 py-2 rounded-xl 
+    ${selected 
+      ? "bg-emerald-400 text-black ring-emerald-500" 
+      : "bg-slate-200 text-slate-900 dark:bg-white/10 dark:text-white ring-white/15"}`}
+>
+
       {who==="dad"?<UserRound className="h-4 w-4" />:<Baby className="h-4 w-4" />} {label}
     </button>
   );
@@ -724,7 +731,19 @@ function EmptyState({ text }: { text: string }) {
 function StyleInject() {
   return (
     <style>{`
-      .field{width:100%;border-radius:1.25rem;background:rgba(255,255,255,.08);padding:.9rem 1.1rem;outline:0;box-shadow:inset 0 1px 0 rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15)}
+      ..field {
+  width: 100%;
+  border-radius: 1.25rem;
+  padding: .9rem 1.1rem;
+  outline: 0;
+  border: 1px solid rgba(255,255,255,.2);
+  background-color: rgba(30,41,59,.8); /* slate-800 نیمه شفاف */
+  color: white;
+}
+.field::placeholder {
+  color: rgba(255,255,255,.6);
+}
+
       .btn-fancy{width:100%;border-radius:1.25rem;background:linear-gradient(90deg,#34d399,#6ee7b7,#a7f3d0);color:#000;font-weight:800;padding:.9rem 1.1rem;box-shadow:0 10px 25px rgba(16,185,129,.35);border:1px solid rgba(16,185,129,.4)}
       .btn-ghost{border-radius:1rem;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);padding:.6rem 1rem}
       .chip{display:inline-flex;align-items:center;gap:.4rem;padding:.35rem .65rem;border-radius:.8rem;border:1px solid rgba(255,255,255,.16)}
