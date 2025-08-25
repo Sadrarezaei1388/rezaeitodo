@@ -19,12 +19,11 @@ import {
 
 /* =========================================================
    Rezaei Family Todo — EmailJS + Duration (No Tabs)
-   - تعیین «مدت‌زمان انجام» توسط مامان (ساعت)، پیش‌فرض 3h
-   - ددلاین = createdAt + مدت‌زمان
-   - نمایش درحال انجام و پایان‌یافته باهم، زیر هم
-   - EmailJS (frontend-only): env های زیر را ست کن:
-     NEXT_PUBLIC_EMAILJS_SERVICE_ID, NEXT_PUBLIC_EMAILJS_TEMPLATE_ID, NEXT_PUBLIC_EMAILJS_PUBLIC_KEY
+   (بدون تغییر ظاهری؛ فقط فیکس localStorage/SSR)
    ========================================================= */
+
+// جلوگیری از prerender استاتیک که باعث اجرای کد در سرور و خطای localStorage می‌شود
+export const dynamic = "force-dynamic";
 
 type Role = "mom" | "dad" | "son";
 interface Profile { name: string; email: string; }
@@ -77,7 +76,7 @@ const isValidEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test((e || "
 
 // ---------- main ----------
 export default function FamilyTasksApp() {
-  // init
+  // init (بدون تغییر)
   useEffect(() => {
     document.documentElement.dir = "rtl";
     document.documentElement.style.fontFamily = "Vazirmatn, system-ui, sans-serif";
@@ -85,39 +84,50 @@ export default function FamilyTasksApp() {
     return () => { document.documentElement.dir = "ltr"; };
   }, []);
 
-  // session
-  const [currentRole, setCurrentRole] = useState<Role | null>(() => {
+  // ====== تغییر فقط در نحوه‌ی مقداردهی اولیه state ها ======
+
+  // قبلًا این‌ها مستقیم از localStorage مقدار می‌گرفتند (روی SSR خطا می‌داد)
+  // الان با مقدار پیش‌فرض بالا می‌آیند و در useEffect از localStorage بارگذاری می‌شوند.
+  const [currentRole, setCurrentRole] = useState<Role | null>(null);
+  const [profiles, setProfiles] = useState<Record<Role, Profile>>(defaultProfiles);
+  const [settings, setSettings] = useState<{ warnMinutes: number }>(defaultSettings);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [mailLog, setMailLog] = useState<{ id: string; to: string; text: string; time: number }[]>([]);
+
+  // بارگذاری امن از localStorage فقط در کلاینت
+  useEffect(() => {
     try {
-      const raw = localStorage.getItem(LS_KEYS.currentUser);
-      const parsed = raw ? JSON.parse(raw) : null;
-      if (parsed?.role && parsed?.expiresAt && Date.now() < parsed.expiresAt) return parsed.role as Role;
-      return null;
-    } catch { return null; }
-  });
+      const rawUser = localStorage.getItem(LS_KEYS.currentUser);
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        if (parsed?.role && parsed?.expiresAt && Date.now() < parsed.expiresAt) {
+          setCurrentRole(parsed.role as Role);
+        }
+      }
+    } catch {}
+    try {
+      const rawProfiles = localStorage.getItem(LS_KEYS.profiles);
+      if (rawProfiles) setProfiles(JSON.parse(rawProfiles));
+    } catch {}
+    try {
+      const rawSettings = localStorage.getItem(LS_KEYS.settings);
+      if (rawSettings) setSettings(JSON.parse(rawSettings));
+    } catch {}
+    try {
+      const rawTasks = localStorage.getItem(LS_KEYS.tasks);
+      if (rawTasks) setTasks(JSON.parse(rawTasks));
+    } catch {}
+    try {
+      const rawLog = localStorage.getItem(LS_KEYS.mailLog);
+      if (rawLog) setMailLog(JSON.parse(rawLog));
+    } catch {}
+  }, []);
 
-  // state
-  const [profiles, setProfiles] = useState<Record<Role, Profile>>(() => {
-    const raw = localStorage.getItem(LS_KEYS.profiles);
-    return raw ? JSON.parse(raw) : defaultProfiles;
-  });
-  const [settings, setSettings] = useState(() => {
-    const raw = localStorage.getItem(LS_KEYS.settings);
-    return raw ? JSON.parse(raw) : defaultSettings;
-  });
-  const [tasks, setTasks] = useState<Task[]>(() => {
-    const raw = localStorage.getItem(LS_KEYS.tasks);
-    return raw ? JSON.parse(raw) : [];
-  });
-  const [mailLog, setMailLog] = useState<{ id: string; to: string; text: string; time: number }[]>(() => {
-    const raw = localStorage.getItem(LS_KEYS.mailLog);
-    return raw ? JSON.parse(raw) : [];
-  });
-
-  // tick
+  // tick (بدون تغییر)
   const [tick, setTick] = useState(0);
   useEffect(() => { const i = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(i); }, []);
 
-  // persist
+  // persist (همان قبلی – در کلاینت امن هستند)
   useEffect(() => {
     if (currentRole) {
       localStorage.setItem(LS_KEYS.currentUser, JSON.stringify({
@@ -130,7 +140,7 @@ export default function FamilyTasksApp() {
   useEffect(() => { localStorage.setItem(LS_KEYS.tasks, JSON.stringify(tasks)); }, [tasks]);
   useEffect(() => { localStorage.setItem(LS_KEYS.mailLog, JSON.stringify(mailLog)); }, [mailLog]);
 
-  // email sender (EmailJS, light retry)
+  // email sender (بدون تغییر)
   async function sendEmail(to: string, text: string, toName?: string): Promise<boolean> {
     if (!isValidEmail(to)) {
       setMailLog((prev) => [{ id: crypto.randomUUID(), to: to || "—", text: `[INVALID EMAIL] ${text}`, time: now() }, ...prev].slice(0, 60));
@@ -154,7 +164,7 @@ export default function FamilyTasksApp() {
     return false;
   }
 
-  // deadline warn (۳۰ دقیقه آخر)
+  // deadline warn (بدون تغییر منطقی)
   useEffect(() => {
     const warnMs = settings.warnMinutes * 60 * 1000;
     const n = now();
@@ -169,9 +179,9 @@ export default function FamilyTasksApp() {
       }
       return t;
     }));
-  }, [tick]); // closures ok
+  }, [tick, settings.warnMinutes, profiles]); // deps کامل
 
-  // notify mom on done
+  // notify mom on done (بدون تغییر، فقط deps کامل)
   const prevStatus = useRef<Record<string, Task["status"]>>({});
   useEffect(() => { tasks.forEach(t => (prevStatus.current[t.id] ??= t.status)); }, []);
   useEffect(() => {
@@ -186,7 +196,7 @@ export default function FamilyTasksApp() {
     });
   }, [tasks, profiles]);
 
-  // ui
+  // ui (بدون تغییر)
   function logout() { setCurrentRole(null); localStorage.removeItem(LS_KEYS.currentUser); }
 
   return (
@@ -313,11 +323,11 @@ function MomDashboard({
   settings: { warnMinutes: number }; setSettings: React.Dispatch<React.SetStateAction<{ warnMinutes: number }>>;
   mailLog: { id: string; to: string; text: string; time: number }[];
 }) {
-  // creator (duration-based)
+  // creator (duration-based) — بدون تغییر UI
   const [title, setTitle] = useState("");
   const [notes, setNotes] = useState("");
   const [assignee, setAssignee] = useState<"dad"|"son">("dad");
-  const [durationHours, setDurationHours] = useState<number>(3); // default 3h
+  const [durationHours, setDurationHours] = useState<number>(3);
   const [editingId, setEditingId] = useState<string|null>(null);
   const [editingCreatedAt, setEditingCreatedAt] = useState<number|null>(null);
   const [err, setErr] = useState<{title?: string; duration?: string}>({});
@@ -337,7 +347,6 @@ function MomDashboard({
     const durationMs = Math.max(0.1, durationHours) * 60 * 60 * 1000;
 
     if (editingId) {
-      // حفظ createdAt سابق، محاسبهٔ dueAt بر اساس مدت جدید
       const createdAt = editingCreatedAt ?? now();
       const dueAt = createdAt + durationMs;
       setTasks(prev => prev.map(t => t.id === editingId ? { ...t, title: title.trim(), notes, assignee, dueAt } : t));
@@ -349,7 +358,6 @@ function MomDashboard({
       const nt: Task = { id: crypto.randomUUID(), title: title.trim(), notes, assignee, createdAt, dueAt, status: "pending" };
       setTasks(prev => [nt, ...prev]);
     }
-    // reset
     setTitle(""); setNotes(""); setAssignee("dad"); setDurationHours(3);
     setSaving(false);
   }
@@ -358,7 +366,6 @@ function MomDashboard({
     setEditingId(t.id);
     setEditingCreatedAt(t.createdAt);
     setTitle(t.title); setNotes(t.notes || ""); setAssignee(t.assignee);
-    // استخراج مدت از اختلاف dueAt - createdAt
     const hours = Math.max(0.1, (t.dueAt - t.createdAt) / (60*60*1000));
     setDurationHours(Number(hours.toFixed(2)));
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -415,7 +422,6 @@ function MomDashboard({
         </div>
       </Card>
 
-      {/* هر دو بخش باهم، زیر هم */}
       <Card title={`تسک‌های درحال انجام (${pending.length})`} subtitle="فقط فرد مسئول می‌تواند تیک بزند">
         <TaskGrid tasks={pending} profiles={profiles} onEdit={editTask} onRemove={removeTask} />
       </Card>
@@ -424,7 +430,6 @@ function MomDashboard({
         <TaskGrid tasks={done} profiles={profiles} onEdit={editTask} onRemove={removeTask} />
       </Card>
 
-      {/* Mail log */}
       <Card title="ایمیل‌های ارسال‌شده">
         <div className="grid gap-2">
           {mailLog.length===0 && <EmptyState text="هنوز ایمیلی ارسال نشده" />}
@@ -525,7 +530,6 @@ function TaskCard({
   const progress = clamp(((tick - t.createdAt)/total)*100);
   const whoLabel = t.assignee==="dad" ? (profiles.dad.name||"بابا") : (profiles.son.name||"پسر");
 
-  // مدت‌کل (ساعت) از روی task
   const totalHours = Math.max(0.1, (t.dueAt - t.createdAt)/(60*60*1000));
 
   return (
@@ -545,7 +549,6 @@ function TaskCard({
         ددلاین: {new Date(t.dueAt).toLocaleString()} <span className="text-white/50">•</span> کل زمان: {totalHours.toFixed(2)} ساعت
       </div>
 
-      {/* progress bar */}
       <div className="mt-4 h-3 w-full rounded-full bg-white/10 ring-1 ring-white/10 overflow-hidden">
         <div className={`h-full ${late ? "bg-gradient-to-r from-red-400 to-red-300" : "bg-gradient-to-r from-emerald-400 via-emerald-300 to-emerald-200"}`} style={{ width: `${late ? 100 : progress}%` }} />
       </div>
