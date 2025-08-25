@@ -2,7 +2,6 @@
 "use client";
 import { useEffect } from "react";
 
-// نوع‌های مینیمال برای OneSignal
 type InitOptions = {
   appId?: string;
   allowLocalhostAsSecureOrigin?: boolean;
@@ -22,7 +21,6 @@ declare global {
   }
 }
 
-/** نامرئی؛ فقط OneSignal را راه‌اندازی می‌کند */
 export default function OneSignalInit() {
   useEffect(() => {
     window.OneSignalDeferred = window.OneSignalDeferred || [];
@@ -31,7 +29,6 @@ export default function OneSignalInit() {
         appId: process.env.NEXT_PUBLIC_ONESIGNAL_APP_ID,
         allowLocalhostAsSecureOrigin: true,
         notifyButton: { enable: false },
-        // با تنظیمات پرامپت پیش‌فرضی که در داشبورد تعریف کردی همخوانه
         promptOptions: { slidedown: { enabled: true, autoPrompt: true } },
       });
     });
@@ -39,7 +36,6 @@ export default function OneSignalInit() {
   return null;
 }
 
-/** لاگین و ست‌کردن تگ نقش کاربر */
 export function onesignalLogin(externalId: string, role: "dad" | "son" | "mom") {
   const push = (fn: (os: OneSignalSDK) => void) => {
     (window.OneSignalDeferred = window.OneSignalDeferred || []).push(fn);

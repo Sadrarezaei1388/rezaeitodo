@@ -1,4 +1,4 @@
-
+// app/page.tsx
 "use client";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import emailjs from "@emailjs/browser";
@@ -17,11 +17,13 @@ import {
   Mail,
   Loader2,
 } from "lucide-react";
-import OneSignalInit , { onesignalLogin } from "./OneSignalInit";
+import OneSignalInit, { onesignalLogin } from "./OneSignalInit";
+import { supabase } from "./lib/supabaseClient";
 
 /* =========================================================
-   Rezaei Family Todo — EmailJS + Duration (No Tabs)
-   - بدون تغییر دیزاین؛ فقط فیکس SSR و اضافه‌کردن OneSignal
+   Rezaei Family Todo — Supabase Sync + EmailJS + OneSignal
+   - UI بدون تغییر؛ فقط منبع تسک‌ها = Supabase (ریلتایم)
+   - پروفایل‌ها/تنظیمات: همان localStorage
    ========================================================= */
 
 export const dynamic = "force-dynamic";
@@ -39,6 +41,18 @@ interface Task {
   notified?: boolean;
 }
 
+type DbTask = {
+  id: string;
+  title: string;
+  notes: string | null;
+  assignee: "dad" | "son";
+  created_at: string;
+  due_at: string;
+  status: "pending" | "done";
+  notified: boolean | null;
+  creator_role: "mom" | "dad" | "son" | null;
+};
+
 const EMAILJS_SERVICE_ID = process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID!;
 const EMAILJS_TEMPLATE_ID = process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID!;
 const EMAILJS_PUBLIC_KEY  = process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY!;
@@ -46,7 +60,6 @@ const EMAILJS_PUBLIC_KEY  = process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY!;
 const LS_KEYS = {
   currentUser: "familyTasks.currentUser",
   profiles: "familyTasks.profiles",
-  tasks: "familyTasks.tasks",
   settings: "familyTasks.settings",
   mailLog: "familyTasks.mailLog",
 };
@@ -58,7 +71,7 @@ const defaultProfiles: Record<Role, Profile> = {
 };
 const defaultSettings = { warnMinutes: 30 };
 
-const now = () => Date.now();
+// helpers
 const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, n));
 function formatRemaining(ms: number) {
   if (ms <= 0) return "تمام شد";
@@ -74,21 +87,41 @@ function formatRemaining(ms: number) {
 }
 const isValidEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test((e || "").trim());
 
+// db mappers
+function mapDbToTask(row: DbTask): Task {
+  return {
+    id: row.id,
+    title: row.title,
+    notes: row.notes || "",
+    assignee: row.assignee,
+    createdAt: new Date(row.created_at).getTime(),
+    dueAt: new Date(row.due_at).getTime(),
+    status: row.status,
+    notified: !!row.notified,
+  };
+}
+
 export default function FamilyTasksApp() {
+  // RTL + emailjs init
   useEffect(() => {
     document.documentElement.dir = "rtl";
     document.documentElement.style.fontFamily = "Vazirmatn, system-ui, sans-serif";
-    emailjs.init(EMAILJS_PUBLIC_KEY || "");
+    try { emailjs.init(EMAILJS_PUBLIC_KEY || ""); } catch {}
     return () => { document.documentElement.dir = "ltr"; };
   }, []);
 
-  // ---- safe initial states; load from localStorage in effect
+  // session
   const [currentRole, setCurrentRole] = useState<Role | null>(null);
+
+  // profiles/settings/mailLog (local)
   const [profiles, setProfiles] = useState<Record<Role, Profile>>(defaultProfiles);
   const [settings, setSettings] = useState<{ warnMinutes: number }>(defaultSettings);
-  const [tasks, setTasks] = useState<Task[]>([]);
   const [mailLog, setMailLog] = useState<{ id: string; to: string; text: string; time: number }[]>([]);
 
+  // tasks (from Supabase)
+  const [tasks, setTasks] = useState<Task[]>([]);
+
+  // initial load (local state)
   useEffect(() => {
     try {
       const rawUser = localStorage.getItem(LS_KEYS.currentUser);
@@ -101,27 +134,65 @@ export default function FamilyTasksApp() {
     } catch {}
     try { const v = localStorage.getItem(LS_KEYS.profiles); if (v) setProfiles(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem(LS_KEYS.settings); if (v) setSettings(JSON.parse(v)); } catch {}
-    try { const v = localStorage.getItem(LS_KEYS.tasks); if (v) setTasks(JSON.parse(v)); } catch {}
     try { const v = localStorage.getItem(LS_KEYS.mailLog); if (v) setMailLog(JSON.parse(v)); } catch {}
   }, []);
 
-  const [tick, setTick] = useState(0);
-  useEffect(() => { const i = setInterval(() => setTick(x => x + 1), 1000); return () => clearInterval(i); }, []);
-
+  // persist locals
   useEffect(() => {
     if (currentRole) {
       localStorage.setItem(LS_KEYS.currentUser, JSON.stringify({ role: currentRole, expiresAt: Date.now() + 86400000 }));
-      if (currentRole === 'dad' || currentRole === 'son' || currentRole === 'mom') {
-        onesignalLogin(currentRole, currentRole);
-      }
+      // onesignal login with best id (email if exists)
+      const id =
+        currentRole === "dad" ? (profiles.dad.email || "dad") :
+        currentRole === "son" ? (profiles.son.email || "son") :
+                                (profiles.mom.email || "mom");
+      onesignalLogin(id, currentRole);
     }
-  }, [currentRole]);
-
+  }, [currentRole, profiles]);
   useEffect(() => { localStorage.setItem(LS_KEYS.profiles, JSON.stringify(profiles)); }, [profiles]);
   useEffect(() => { localStorage.setItem(LS_KEYS.settings, JSON.stringify(settings)); }, [settings]);
-  useEffect(() => { localStorage.setItem(LS_KEYS.tasks, JSON.stringify(tasks)); }, [tasks]);
   useEffect(() => { localStorage.setItem(LS_KEYS.mailLog, JSON.stringify(mailLog)); }, [mailLog]);
 
+  // Supabase: initial fetch + realtime
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("tasks")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (!error && data && mounted) {
+        setTasks(data.map(mapDbToTask));
+      }
+    })();
+
+    const channel = supabase
+      .channel("tasks-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "tasks" }, (payload) => {
+        if (payload.eventType === "INSERT") {
+          setTasks((prev) => [mapDbToTask(payload.new as DbTask), ...prev]);
+        } else if (payload.eventType === "UPDATE") {
+          setTasks((prev) =>
+            prev.map((t) => (t.id === (payload.new as DbTask).id ? mapDbToTask(payload.new as DbTask) : t))
+          );
+        } else if (payload.eventType === "DELETE") {
+          setTasks((prev) => prev.filter((t) => t.id !== (payload.old as DbTask).id));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      mounted = false;
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // tick for countdown
+  const [tick, setTick] = useState(0);
+  useEffect(() => { const i = setInterval(() => setTick((x) => x + 1), 1000); return () => clearInterval(i); }, []);
+
+  // email sender (same as قبل)
   async function sendEmail(to: string, text: string, toName?: string): Promise<boolean> {
     if (!isValidEmail(to)) {
       setMailLog((prev) => [{ id: crypto.randomUUID(), to: to || "—", text: `[INVALID EMAIL] ${text}`, time: Date.now() }, ...prev].slice(0, 60));
@@ -145,26 +216,28 @@ export default function FamilyTasksApp() {
     return false;
   }
 
+  // deadline warn: update notified=true در DB
   useEffect(() => {
-    const warnMs = settings.warnMinutes * 60 * 1000;
     const n = Date.now();
-    setTasks(prev => prev.map(t => {
+    const warnMs = settings.warnMinutes * 60 * 1000;
+    tasks.forEach(async (t) => {
       if (t.status === "pending" && !t.notified && n >= t.dueAt - warnMs && n < t.dueAt) {
         const who = t.assignee;
         const email = profiles[who]?.email || "";
         const name  = profiles[who]?.name || "";
         const remain = formatRemaining(t.dueAt - n);
         if (isValidEmail(email)) void sendEmail(email, `یادآوری: «${t.title}» تا ${remain} دیگه تموم میشه ⏳`, name);
-        return { ...t, notified: true };
+        await supabase.from("tasks").update({ notified: true }).eq("id", t.id);
       }
-      return t;
-    }));
-  }, [tick, settings.warnMinutes, profiles]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick]); // عمداً هر ثانیه چک
 
+  // notify mom on done (ایمیل)
   const prevStatus = useRef<Record<string, Task["status"]>>({});
   useEffect(() => { tasks.forEach(t => (prevStatus.current[t.id] ??= t.status)); }, []);
   useEffect(() => {
-    tasks.forEach(t => {
+    tasks.forEach((t) => {
       const prev = prevStatus.current[t.id];
       if (prev === "pending" && t.status === "done") {
         const who = t.assignee === "dad" ? (profiles.dad.name || "بابا") : (profiles.son.name || "پسر");
@@ -217,38 +290,6 @@ export default function FamilyTasksApp() {
   );
 }
 
-/** === AssignChip: دکمه انتخاب مسئول تسک (بابا/پسر) === */
-function AssignChip({
-  who,
-  selected,
-  onClick,
-  label,
-}: {
-  who: "dad" | "son";
-  selected: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`chip px-4 py-2 rounded-xl ${
-        selected
-          ? "bg-emerald-400 text-black ring-emerald-500"
-          : "bg-white/10 ring-white/15"
-      }`}
-      type="button"
-    >
-      {who === "dad" ? (
-        <UserRound className="h-4 w-4" />
-      ) : (
-        <Baby className="h-4 w-4" />
-      )}{" "}
-      {label}
-    </button>
-  );
-}
-
 /* ======================== Auth ======================== */
 function AuthCard({
   profiles, setProfiles, onLoggedIn,
@@ -279,10 +320,11 @@ function AuthCard({
     setBusy(true);
     setProfiles(prev => ({ ...prev, [role]: { name: name.trim() || prev[role].name, email: email.trim() } }));
     onLoggedIn(role);
-    // OneSignal login/tag
-    if (role === 'dad' || role === 'son' || role === 'mom') {
-      onesignalLogin(role, role);
-    }
+
+    // OneSignal login/tag - از ایمیل بعنوان externalId استفاده کن
+    const exId = (email || role).trim();
+    onesignalLogin(exId, role);
+
     setBusy(false);
   }
 
@@ -330,10 +372,10 @@ function RoleSelector({ role, onChange }: { role: Role; onChange: (r: Role)=>voi
 
 /* ======================== Mom Dashboard ======================== */
 function MomDashboard({
-  profiles, setProfiles, tasks, setTasks, settings, setSettings, mailLog,
+  profiles, tasks, setTasks, settings, setSettings, mailLog,
 }: {
   profiles: Record<Role, Profile>;
-  setProfiles: React.Dispatch<React.SetStateAction<Record<Role, Profile>>>;
+  setProfiles?: React.Dispatch<React.SetStateAction<Record<Role, Profile>>>;
   tasks: Task[]; setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
   settings: { warnMinutes: number }; setSettings: React.Dispatch<React.SetStateAction<{ warnMinutes: number }>>;
   mailLog: { id: string; to: string; text: string; time: number }[];
@@ -358,34 +400,49 @@ function MomDashboard({
   async function upsertTask() {
     if (!validateForm()) return;
     setSaving(true);
-    const durationMs = Math.max(0.1, durationHours) * 60 * 60 * 1000;
+    const createdAt = editingCreatedAt ? new Date(editingCreatedAt) : new Date();
+    const dueAt = new Date(createdAt.getTime() + Math.max(0.1, durationHours) * 60 * 60 * 1000);
 
     if (editingId) {
-      const createdAt = editingCreatedAt ?? Date.now();
-      const dueAt = createdAt + durationMs;
-      setTasks(prev => prev.map(t => t.id === editingId ? { ...t, title: title.trim(), notes, assignee, dueAt } : t));
+      await supabase
+        .from("tasks")
+        .update({
+          title: title.trim(),
+          notes,
+          assignee,
+          due_at: dueAt.toISOString(),
+        })
+        .eq("id", editingId);
       setEditingId(null);
       setEditingCreatedAt(null);
     } else {
-      const createdAt = Date.now();
-      const dueAt = createdAt + durationMs;
-      const nt: Task = { id: crypto.randomUUID(), title: title.trim(), notes, assignee, createdAt, dueAt, status: "pending" };
-      setTasks(prev => [nt, ...prev]);
+      await supabase.from("tasks").insert([
+        {
+          title: title.trim(),
+          notes,
+          assignee,
+          created_at: createdAt.toISOString(),
+          due_at: dueAt.toISOString(),
+          status: "pending",
+          creator_role: "mom",
+        },
+      ]);
 
-      // OneSignal notifications
+      // Push فوری
       try {
-        const warnMinutes = settings.warnMinutes;
         await fetch('/api/push', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: assignee, title: 'تسک جدید', body: `برای شما تسک «${title.trim()}» ثبت شد.`, scheduleAt: null })
+          body: JSON.stringify({ to: assignee, title: 'تسک جدید', body: `برای شما تسک «${title.trim()}» ثبت شد.` })
         });
-        const scheduleISO = new Date(dueAt - warnMinutes * 60_000).toISOString();
+        // یادآوری زمان‌بندی‌شده
+        const scheduleISO = new Date(dueAt.getTime() - settings.warnMinutes * 60_000).toISOString();
         await fetch('/api/push', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ to: assignee, title: 'یادآوری تسک', body: `«${title.trim()}» تا ${warnMinutes} دقیقه دیگر تمام می‌شود.`, scheduleAt: scheduleISO })
+          body: JSON.stringify({ to: assignee, title: 'یادآوری تسک', body: `«${title.trim()}» تا ${settings.warnMinutes} دقیقه دیگر تمام می‌شود.`, scheduleAt: scheduleISO })
         });
       } catch {}
     }
+
     setTitle(""); setNotes(""); setAssignee("dad"); setDurationHours(3);
     setSaving(false);
   }
@@ -398,14 +455,18 @@ function MomDashboard({
     setDurationHours(Number(hours.toFixed(2)));
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
-  const removeTask = (id: string) => setTasks(prev => prev.filter(t => t.id !== id));
+  const removeTask = async (id: string) => { await supabase.from("tasks").delete().eq("id", id); };
 
   const pending = tasks.filter(t => t.status === "pending");
   const done    = tasks.filter(t => t.status === "done");
 
   return (
     <div className="grid gap-8">
-      <Card title={editingId ? "ویرایش تسک" : "تسک جدید"} subtitle="مدت‌زمان انجام را مشخص کن؛ اگر خالی بگذاری، ۳ ساعت در نظر گرفته می‌شود" actions={<SettingsPopup settings={settings} setSettings={setSettings} />}>
+      <Card
+        title={editingId ? "ویرایش تسک" : "تسک جدید"}
+        subtitle="مدت‌زمان انجام را مشخص کن؛ اگر خالی بگذاری، ۳ ساعت در نظر گرفته می‌شود"
+        actions={<SettingsPopup settings={settings} setSettings={setSettings} />}
+      >
         <div className="rounded-3xl p-5 md:p-6 bg-white/5 ring-1 ring-white/10 backdrop-blur shadow-xl shadow-black/20">
           <div className="grid md:grid-cols-2 gap-4">
             <Field label="عنوان" icon={<Edit3 className="h-4 w-4" />}>
@@ -413,7 +474,15 @@ function MomDashboard({
               {err.title && <div className="text-red-300 text-sm mt-1">{err.title}</div>}
             </Field>
             <Field label="مدت‌زمان (ساعت)" icon={<Clock className="h-4 w-4" />}>
-              <input type="number" min={0.25} step={0.25} className={`field ltr ${err.duration ? "ring-red-400 focus:ring-red-400" : ""}`} value={Number.isFinite(durationHours) ? durationHours : 3} onChange={(e)=> setDurationHours(e.target.value === "" ? 3 : parseFloat(e.target.value))} placeholder="مثلاً 3" />
+              <input
+                type="number"
+                min={0.25}
+                step={0.25}
+                className={`field ltr ${err.duration ? "ring-red-400 focus:ring-red-400" : ""}`}
+                value={Number.isFinite(durationHours) ? durationHours : 3}
+                onChange={(e)=> setDurationHours(e.target.value === "" ? 3 : parseFloat(e.target.value))}
+                placeholder="مثلاً 3"
+              />
               {err.duration && <div className="text-red-300 text-sm mt-1">{err.duration}</div>}
               <div className="text-xs text-white/60 mt-1">اگر خالی بگذاری، پیش‌فرض ۳ ساعت لحاظ می‌شود.</div>
             </Field>
@@ -478,9 +547,9 @@ function MemberDashboard({
   const pending = mine.filter(t=>t.status==="pending");
   const done    = mine.filter(t=>t.status==="done");
 
-  function toggle(t: Task){
-    const nt = { ...t, status: t.status==="pending" ? "done" : "pending" } as Task;
-    setTasks(prev=>prev.map(x=>x.id===t.id?nt:x));
+  async function toggle(t: Task){
+    const newStatus = t.status === "pending" ? "done" : "pending";
+    await supabase.from("tasks").update({ status: newStatus }).eq("id", t.id);
   }
 
   const myEmail = profiles[role].email?.trim();
@@ -505,7 +574,7 @@ function MemberDashboard({
                 <div className="text-xs text-white/60">به: {s.to || "—"}</div>
                 <div className="text-sm whitespace-pre-wrap">{s.text}</div>
               </div>
-              <div className="text-xs text-white/60 لtr whitespace-nowrap">{new Date(s.time).toLocaleString()}</div>
+              <div className="text-xs text-white/60 ltr whitespace-nowrap">{new Date(s.time).toLocaleString()}</div>
             </div>
           ))}
         </div>
@@ -514,6 +583,7 @@ function MemberDashboard({
   );
 }
 
+/* ======================== Pretty Task Grid ======================== */
 function TaskGrid({
   tasks, profiles, onEdit, onRemove, onToggle,
 }: {
@@ -570,7 +640,7 @@ function TaskCard({
         {late ? "ددلاین گذشته" : `${formatRemaining(remain)} مانده`}
       </div>
 
-      <div className="mt-4 flex.flex-wrap items-center justify-between gap-2">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <div className="text-xs text-white/60">شروع: {new Date(t.createdAt).toLocaleString()}</div>
         <div className="flex items-center gap-2">
           {onToggle && (
@@ -583,6 +653,15 @@ function TaskCard({
         </div>
       </div>
     </div>
+  );
+}
+
+/* ======================== small parts ======================== */
+function AssignChip({ who, selected, onClick, label }: { who: "dad"|"son"; selected: boolean; onClick: ()=>void; label: string }) {
+  return (
+    <button onClick={onClick} className={`chip px-4 py-2 rounded-xl ${selected ? "bg-emerald-400 text-black ring-emerald-500" : "bg-white/10 ring-white/15"}`}>
+      {who==="dad"?<UserRound className="h-4 w-4" />:<Baby className="h-4 w-4" />} {label}
+    </button>
   );
 }
 
@@ -616,6 +695,7 @@ function SettingsPopup({ settings, setSettings }: {
   );
 }
 
+/* ======================== primitives ======================== */
 function Card({ title, subtitle, actions, children }: { title: string; subtitle?: string; actions?: React.ReactNode; children?: React.ReactNode; }) {
   return (
     <div className="rounded-3xl border border-white/10 bg-white/5 p-5 md:p-7 shadow-2xl shadow-black/30 backdrop-blur">

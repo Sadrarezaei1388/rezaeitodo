@@ -7,13 +7,13 @@ const REST_API_KEY = process.env.ONESIGNAL_REST_API_KEY!;
 type TargetRole = "dad" | "son" | "mom";
 
 interface PushBody {
-  // یکی از این دو را بده:
-  to?: TargetRole;              // ارسال بر اساس تگ نقش
-  externalId?: string;          // یا ارسال دقیق به یک نفر (external_id)
+  // یکی از این دو هدف‌گیری:
+  to?: TargetRole;         // بر اساس تگ نقش
+  externalId?: string;     // دقیق برای یک نفر (external_id)
 
   title: string;
   body: string;
-  scheduleAt?: string | null;   // ISO time – اگر خالی باشد فوری ارسال می‌شود
+  scheduleAt?: string | null; // ISO
 }
 
 type OneSignalTagCondition = { key: string; relation: "="; value: string };
@@ -25,7 +25,7 @@ interface OneSignalPayload {
   tags?: OneSignalTagCondition[];
   include_external_user_ids?: string[];
   url?: string;
-  send_after?: string; // RFC2822 یا ISO
+  send_after?: string;
 }
 
 interface OneSignalResp {
@@ -47,7 +47,6 @@ export async function POST(req: NextRequest) {
       send_after: scheduleAt || undefined,
     };
 
-    // هدف‌گیری: یا بر اساس نقش (Tag)، یا بر اساس external_id
     if (externalId) {
       payload.include_external_user_ids = [externalId];
     } else if (to) {
